@@ -709,6 +709,7 @@ __device__ __forceinline__ void matmul_cluster_impl(
         const int col_warp = ew / ROW_STRIPS;
         const int my_row = row_warp * 32 + lane;
         uint32_t full = 0;
+        int store_stage = 0;
 
         for (int ti = 0; ti < num_my; ti++) {
             int base_m, base_n, local_m, local_n;
@@ -726,7 +727,6 @@ __device__ __forceinline__ void matmul_cluster_impl(
             constexpr int NUM_CHUNKS = BN / STORE_N;
             static_assert(STORE_N == 64);
             static_assert(LOADS_PER_WARP * COL_GROUPS == LOADS_PER_CHUNK);
-            int store_stage = 0;
 
             #pragma unroll
             for (int chunk = 0; chunk < NUM_CHUNKS; chunk++) {
