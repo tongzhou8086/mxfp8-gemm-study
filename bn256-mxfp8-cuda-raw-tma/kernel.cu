@@ -743,7 +743,9 @@ __device__ __forceinline__ void matmul_cluster_impl(
                         &D_tmap, d_smem[store_stage],
                         local_m, (base_n + chunk * STORE_N) / STORE_N);
                 }
-                store_stage ^= 1;
+                store_stage = (store_stage + 1 == TMA_STORE_STAGES)
+                    ? 0
+                    : store_stage + 1;
             }
         }
         if (ew == 0) {

@@ -1,7 +1,7 @@
 """Self-contained MXFP8 matmul kernel launcher.
 
-Variant: bn256-mxfp8-cuda-db-tmem-tma
-Config: BM=128 BN=256 BK=128 NS=5 GROUP_SIZE_M=16 NUM_WARPS=4
+Variant: bn256-mxfp8-cuda-db-tmem-tma-store2
+Config: BM=128 BN=256 BK=128 NS=5 GROUP_SIZE_M=16 NUM_WARPS=4 TMA_STORE_STAGES=2
 
 Run with:  python <this file>.py   (kernel.cu must sit alongside it)
 Requires:  torch, numpy, cuda-python (cuda.bindings), nvcc on PATH.
@@ -377,7 +377,7 @@ BN_LOCAL     = BN // CTA_GROUP
 FP8_BYTES    = 1
 BF16_BYTES   = 2
 STORE_N      = 64
-TMA_STORE_STAGES = 3
+TMA_STORE_STAGES = 2
 # Overlap uses two stream warps in warpgroup 0 plus NUM_WARPS epilogue
 # warps starting at warp 4, matching the Tier 2 overlap convention.
 THREADS      = (NUM_WARPS + 4) * 32 if EPILOGUE_OVERLAP else NUM_WARPS * 32
@@ -594,7 +594,7 @@ for (M, N, K) in [(SHAPE_M, SHAPE_N, SHAPE_K)]:
         shared=SHARED_BYTES, args=args, sync=False))
     tf = flops / (us * 1e-6) / 1e12
 
-    print(f"{ok}  MXFP8 CUDA-DB-TMEM-TMA M,N,K={M:>5},{N:>5},{K:>5}   grid={grid[0]} CTAs ({CTA_GROUP}-CTA clusters)   rel err={rel:.2%}")
+    print(f"{ok}  MXFP8 CUDA-DB-TMEM-S2  M,N,K={M:>5},{N:>5},{K:>5}   grid={grid[0]} CTAs ({CTA_GROUP}-CTA clusters)   rel err={rel:.2%}")
     print(f"     BM={BM} BN={BN} BK={BK} NS={NS} GSM={GROUP_SIZE_M} NW={NUM_WARPS} "
           f"PERSISTENT={PERSISTENT} "
           f"EPILOGUE_OVERLAP={EPILOGUE_OVERLAP} EPILOGUE_SPLIT={EPILOGUE_SPLIT}   "

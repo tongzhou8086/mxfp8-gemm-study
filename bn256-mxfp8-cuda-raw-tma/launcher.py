@@ -575,8 +575,10 @@ def setup(M, N, K):
 
 
 SHAPE_N = int(os.environ.get("SHAPE_N", "4096"))
+SHAPE_M = int(os.environ.get("SHAPE_M", str(SHAPE_N)))
+SHAPE_K = int(os.environ.get("SHAPE_K", str(SHAPE_N)))
 
-for (M, N, K) in [(SHAPE_N, SHAPE_N, SHAPE_N)]:
+for (M, N, K) in [(SHAPE_M, SHAPE_N, SHAPE_K)]:
     A, A_sc_unsw, B, B_sc_unsw, C, grid, args = setup(M, N, K)
     flops = 2.0 * M * N * K
 
@@ -592,7 +594,7 @@ for (M, N, K) in [(SHAPE_N, SHAPE_N, SHAPE_N)]:
         shared=SHARED_BYTES, args=args, sync=False))
     tf = flops / (us * 1e-6) / 1e12
 
-    print(f"{ok}  MXFP8 CUDA-RAW-TMA    M=N=K={M:>5}   grid={grid[0]} CTAs ({CTA_GROUP}-CTA clusters)   rel err={rel:.2%}")
+    print(f"{ok}  MXFP8 CUDA-RAW-TMA    M,N,K={M:>5},{N:>5},{K:>5}   grid={grid[0]} CTAs ({CTA_GROUP}-CTA clusters)   rel err={rel:.2%}")
     print(f"     BM={BM} BN={BN} BK={BK} NS={NS} GSM={GROUP_SIZE_M} NW={NUM_WARPS} "
           f"PERSISTENT={PERSISTENT} "
           f"EPILOGUE_OVERLAP={EPILOGUE_OVERLAP} EPILOGUE_SPLIT={EPILOGUE_SPLIT}   "

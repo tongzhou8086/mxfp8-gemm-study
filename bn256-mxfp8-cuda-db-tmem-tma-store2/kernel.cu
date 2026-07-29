@@ -14,7 +14,7 @@ constexpr int NUM_WARPS    = 4;
 constexpr int CTA_GROUP    = 2;
 constexpr int BN_LOCAL     = BN / CTA_GROUP;
 constexpr int STORE_N      = 64;
-constexpr int TMA_STORE_STAGES = 3;
+constexpr int TMA_STORE_STAGES = 2;
 
 constexpr int WARP_SIZE = 32;
 constexpr int THREADS   = NUM_WARPS * WARP_SIZE;

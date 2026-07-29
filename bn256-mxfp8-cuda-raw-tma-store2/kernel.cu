@@ -3,8 +3,8 @@
 #include <cuda_fp8.h>
 #include <cstdint>
 
-// MXFP8 double-TMEM-buffering variant. The scale factors are packed into the
-// first 64 TMEM columns of the output buffer currently being drained.
+// First MXFP8 variant: keep the BN256 2-CTA persistent pipeline shape, but use
+// a single TMEM accumulator so scale-factor TMEM has room.
 constexpr int BM           = 128;
 constexpr int BN           = 256;
 constexpr int BK           = 128;
@@ -14,7 +14,7 @@ constexpr int NUM_WARPS    = 4;
 constexpr int CTA_GROUP    = 2;
 constexpr int BN_LOCAL     = BN / CTA_GROUP;
 constexpr int STORE_N      = 64;
-constexpr int TMA_STORE_STAGES = 3;
+constexpr int TMA_STORE_STAGES = 2;
 
 constexpr int WARP_SIZE = 32;
 constexpr int THREADS   = NUM_WARPS * WARP_SIZE;
@@ -521,23 +521,12 @@ __device__ __forceinline__ void matmul_cluster_impl(
     const int lane    = tid % WARP_SIZE;
 
     __shared__ uint64_t mbar_tmem_data_ready;
-    __shared__ uint64_t mbar_tmem_accum_free[2];
-    __shared__ uint64_t mbar_tmem_scale_space_free[2];
+    __shared__ uint64_t mbar_tmem_buffer_free;
 
     constexpr int TMEM_ALLOC_COLS = 512;
-    constexpr int TMEM_ACCUM_COLS = BN;
-    constexpr int TMEM_SCALE_WINDOW_COLS = STORE_N;
-    constexpr int TMEM_E8M0_PER_PHYS_COL = 4;
-    constexpr int TMEM_A_SCALE_LOGICAL_COLS = 16 * NS;
-    constexpr int TMEM_B_SCALE_LOGICAL_COLS = 32 * NS;
-    constexpr int TMEM_A_SCALE_PHYS_COLS =
-        TMEM_A_SCALE_LOGICAL_COLS / TMEM_E8M0_PER_PHYS_COL;
-    constexpr int TMEM_B_SCALE_PHYS_COLS =
-        TMEM_B_SCALE_LOGICAL_COLS / TMEM_E8M0_PER_PHYS_COL;
-    static_assert(TMEM_ALLOC_COLS == 2 * TMEM_ACCUM_COLS);
-    static_assert(TMEM_SCALE_WINDOW_COLS == 64);
-    static_assert(TMEM_A_SCALE_PHYS_COLS + TMEM_B_SCALE_PHYS_COLS <=
-                  TMEM_SCALE_WINDOW_COLS);
+    constexpr int TMEM_OUT_COL = 0;
+    constexpr int TMEM_A_SCALE_COL = 256;
+    constexpr int TMEM_B_SCALE_COL = 384;
 
     if (warp_id == 0) {
         tcgen05_alloc_g2(tmem_addr_holder[0], TMEM_ALLOC_COLS);
@@ -550,13 +539,8 @@ __device__ __forceinline__ void matmul_cluster_impl(
             mbarrier_arrive_no_tx(mbar_compute_buffer_free[s]);
         }
         mbarrier_init(mbar_tmem_data_ready, 1);
-        #pragma unroll
-        for (int b = 0; b < 2; b++) {
-            mbarrier_init(mbar_tmem_accum_free[b], CTA_GROUP);
-            mbarrier_init(mbar_tmem_scale_space_free[b], CTA_GROUP);
-            mbarrier_arrive_no_tx_cluster_cta0(mbar_tmem_accum_free[b]);
-        }
-        mbarrier_arrive_no_tx_cluster_cta0(mbar_tmem_scale_space_free[1]);
+        mbarrier_init(mbar_tmem_buffer_free, CTA_GROUP);
+        mbarrier_arrive_no_tx_cluster_cta0(mbar_tmem_buffer_free);
         fence_mbarrier_init_release_cluster();
     }
 
@@ -640,30 +624,17 @@ __device__ __forceinline__ void matmul_cluster_impl(
         }
     } else if (cta_rank == 0 && warp_id == 1 && elect_sync()) {
         uint32_t compute_data_ready_phase[NS] = {};
-        uint32_t tmem_accum_free_phase[2] = {};
-        uint32_t tmem_scale_space_free_phase[2] = {};
+        uint32_t tmem_buffer_free_phase = 0;
         long gk = 0;
 
-        for (int ti = 0; ti < num_my; ti++) {
-            const int accum_buf = ti & 1;
-            const int scale_buf = accum_buf ^ 1;
-            mbarrier_wait_phase(
-                mbar_tmem_accum_free[accum_buf],
-                tmem_accum_free_phase[accum_buf]);
-            tmem_accum_free_phase[accum_buf] ^= 1;
-            mbarrier_wait_phase(
-                mbar_tmem_scale_space_free[scale_buf],
-                tmem_scale_space_free_phase[scale_buf]);
-            tmem_scale_space_free_phase[scale_buf] ^= 1;
-            tcgen05_fence_after_thread_sync();
+        TmemTile<float, 128, BN> out_tm(taddr + TMEM_OUT_COL);
+        TmemTile<__nv_fp8_e8m0, 128, 16 * NS> a_sc_tm(taddr + TMEM_A_SCALE_COL);
+        TmemTile<__nv_fp8_e8m0, 128, 32 * NS> b_sc_tm(taddr + TMEM_B_SCALE_COL);
 
-            const uint32_t accum_col = accum_buf * TMEM_ACCUM_COLS;
-            const uint32_t scale_col = scale_buf * TMEM_ACCUM_COLS;
-            TmemTile<float, 128, BN> out_tm(taddr + accum_col);
-            TmemTile<__nv_fp8_e8m0, 128, TMEM_A_SCALE_LOGICAL_COLS>
-                a_sc_tm(taddr + scale_col);
-            TmemTile<__nv_fp8_e8m0, 128, TMEM_B_SCALE_LOGICAL_COLS>
-                b_sc_tm(taddr + scale_col + TMEM_A_SCALE_PHYS_COLS);
+        for (int ti = 0; ti < num_my; ti++) {
+            mbarrier_wait_phase(mbar_tmem_buffer_free, tmem_buffer_free_phase);
+            tmem_buffer_free_phase ^= 1;
+            tcgen05_fence_after_thread_sync();
 
             for (int k = 0; k < num_k; k++) {
                 int slot = gk % NS;
@@ -717,10 +688,7 @@ __device__ __forceinline__ void matmul_cluster_impl(
             full ^= 1;
             tcgen05_fence_after_thread_sync();
 
-            const int accum_buf = ti & 1;
-            const uint32_t accum_col = accum_buf * TMEM_ACCUM_COLS;
-            const uint32_t trow = taddr + accum_col +
-                ((uint32_t)(cta_rank * BM + row_warp * 32) << 16);
+            const uint32_t trow = taddr + ((uint32_t)(cta_rank * BM + row_warp * 32) << 16);
             constexpr int LOADS_PER_CHUNK = STORE_N / 8;
             constexpr int LOADS_PER_WARP = LOADS_PER_CHUNK / COL_GROUPS;
             constexpr int NUM_CHUNKS = BN / STORE_N;
@@ -739,18 +707,10 @@ __device__ __forceinline__ void matmul_cluster_impl(
                 }
                 tcgen05_wait_ld();
 
-                if (chunk == 0) {
-                    tcgen05_fence_before_thread_sync();
-                    if (ew == 0 && elect_sync()) {
-                        mbarrier_arrive_no_tx_cluster_cta0(
-                            mbar_tmem_scale_space_free[accum_buf]);
-                    }
-                }
                 if (chunk == NUM_CHUNKS - 1) {
                     tcgen05_fence_before_thread_sync();
                     if (ew == 0 && elect_sync()) {
-                        mbarrier_arrive_no_tx_cluster_cta0(
-                            mbar_tmem_accum_free[accum_buf]);
+                        mbarrier_arrive_no_tx_cluster_cta0(mbar_tmem_buffer_free);
                     }
                 }
 
