@@ -1,7 +1,7 @@
 """Self-contained MXFP8 matmul kernel launcher.
 
 Variant: bn256-mxfp8-cuda-raw-tma
-Config: BM=128 BN=256 BK=128 NS=5 GROUP_SIZE_M=8 NUM_WARPS=4
+Config: BM=128 BN=256 BK=128 NS=5 GROUP_SIZE_M=16 NUM_WARPS=4
 
 Run with:  python <this file>.py   (kernel.cu must sit alongside it)
 Requires:  torch, numpy, cuda-python (cuda.bindings), nvcc on PATH.
@@ -360,7 +360,7 @@ from cuda.bindings import driver
 # ── User-tunable constants (mirror kernel.cu — mmcomposer keeps in sync) ──
 BM, BN, BK = 128, 256, 128
 NS           = 5
-GROUP_SIZE_M = 8
+GROUP_SIZE_M = 16
 NUM_WARPS    = 4
 PERSISTENT   = 1
 TCGEN05_LD_WIDTH = 8
@@ -377,7 +377,7 @@ BN_LOCAL     = BN // CTA_GROUP
 FP8_BYTES    = 1
 BF16_BYTES   = 2
 STORE_N      = 64
-TMA_STORE_STAGES = 2
+TMA_STORE_STAGES = 3
 # Overlap uses two stream warps in warpgroup 0 plus NUM_WARPS epilogue
 # warps starting at warp 4, matching the Tier 2 overlap convention.
 THREADS      = (NUM_WARPS + 4) * 32 if EPILOGUE_OVERLAP else NUM_WARPS * 32
